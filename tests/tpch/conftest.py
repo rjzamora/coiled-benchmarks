@@ -7,7 +7,13 @@ import pytest
 from dask.distributed import LocalCluster
 
 _scale = 100
-_local = False
+_local = True
+_rapids = True
+
+LOCAL_SF100_PATH = "/raid/dask-space/rzamora/tpch-data/tables_scale_100/"
+#LOCAL_SF100_PATH = "./tpch-data/scale100/"
+
+LOCAL_DIRECTORY = "/raid/dask-space/rzamora/dask-space"
 
 
 @pytest.fixture(scope="session")
@@ -21,6 +27,11 @@ def local():
 
 
 @pytest.fixture(scope="session")
+def rapids():
+    return _rapids
+
+
+@pytest.fixture(scope="session")
 def dataset_path(local, scale):
     remote_paths = {
         10: "s3://coiled-runtime-ci/tpch_scale_10/",
@@ -29,7 +40,7 @@ def dataset_path(local, scale):
     }
     local_paths = {
         10: "./tpch-data/scale10/",
-        100: "./tpch-data/scale100/",
+        100: LOCAL_SF100_PATH,
     }
 
     if local:
@@ -52,12 +63,34 @@ def module(request):
 
 @pytest.fixture(scope="module")
 def cluster(
-    local, scale, module, dask_env_variables, cluster_kwargs, github_cluster_tags
+    local, rapids, scale, module, dask_env_variables, cluster_kwargs, github_cluster_tags
 ):
     if local:
-        with LocalCluster() as cluster:
-            yield cluster
+        if rapids:
+            pytest.importorskip("dask_cudf")
+            dask_cuda = pytest.importorskip("dask_cuda")
+
+            with dask.config.set(
+                {
+                    "dataframe.backend": "cudf",
+                    "dataframe.shuffle.method": "tasks",
+                }
+            ):
+                with dask_cuda.LocalCUDACluster(
+                    rmm_pool_size="24GB",
+                    local_directory=LOCAL_DIRECTORY,
+                    dashboard_address=":41717",
+                ) as cluster:
+                    yield cluster
+        else:
+            with LocalCluster(
+                local_directory=LOCAL_DIRECTORY,
+                dashboard_address=":41717",
+            ) as cluster:
+                yield cluster
     else:
+        if rapids:
+            raise NotImplementedError()
         kwargs = dict(
             name=f"tpch-{module}-{scale}-{uuid.uuid4().hex[:8]}",
             environ=dask_env_variables,

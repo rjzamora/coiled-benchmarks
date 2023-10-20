@@ -2,10 +2,18 @@ from datetime import datetime
 
 import dask_expr as dd
 
+SUFFIX = ".parquet"
+BLOCKSIZE = "256MiB"
+#BLOCKSIZE = "128MiB"
+
+
+def _read_parquet(path):
+    return dd.read_parquet(path + SUFFIX, blocksize=BLOCKSIZE)
+
 
 def test_query_1(client, dataset_path):
     VAR1 = datetime(1998, 9, 2)
-    lineitem_ds = dd.read_parquet(dataset_path + "lineitem")
+    lineitem_ds = _read_parquet(dataset_path + "lineitem")
 
     lineitem_filtered = lineitem_ds[lineitem_ds.l_shipdate <= VAR1]
     lineitem_filtered["sum_qty"] = lineitem_filtered.l_quantity
@@ -45,11 +53,11 @@ def test_query_2(client, dataset_path):
     var2 = "BRASS"
     var3 = "EUROPE"
 
-    region_ds = dd.read_parquet(dataset_path + "region")
-    nation_filtered = dd.read_parquet(dataset_path + "nation")
-    supplier_filtered = dd.read_parquet(dataset_path + "supplier")
-    part_filtered = dd.read_parquet(dataset_path + "part")
-    partsupp_filtered = dd.read_parquet(dataset_path + "partsupp")
+    region_ds = _read_parquet(dataset_path + "region")
+    nation_filtered = _read_parquet(dataset_path + "nation")
+    supplier_filtered = _read_parquet(dataset_path + "supplier")
+    part_filtered = _read_parquet(dataset_path + "part")
+    partsupp_filtered = _read_parquet(dataset_path + "partsupp")
 
     region_filtered = region_ds[(region_ds["r_name"] == var3)]
     r_n_merged = nation_filtered.merge(
@@ -112,9 +120,9 @@ def test_query_3(client, dataset_path):
     var1 = datetime.strptime("1995-03-15", "%Y-%m-%d")
     var2 = "BUILDING"
 
-    lineitem_ds = dd.read_parquet(dataset_path + "lineitem")
-    orders_ds = dd.read_parquet(dataset_path + "orders")
-    cutomer_ds = dd.read_parquet(dataset_path + "customer")
+    lineitem_ds = _read_parquet(dataset_path + "lineitem")
+    orders_ds = _read_parquet(dataset_path + "orders")
+    cutomer_ds = _read_parquet(dataset_path + "customer")
 
     lsel = lineitem_ds.l_shipdate > var1
     osel = orders_ds.o_orderdate < var1
@@ -137,8 +145,8 @@ def test_query_4(client, dataset_path):
     date1 = datetime.strptime("1993-10-01", "%Y-%m-%d")
     date2 = datetime.strptime("1993-07-01", "%Y-%m-%d")
 
-    line_item_ds = dd.read_parquet(dataset_path + "lineitem")
-    orders_ds = dd.read_parquet(dataset_path + "orders")
+    line_item_ds = _read_parquet(dataset_path + "lineitem")
+    orders_ds = _read_parquet(dataset_path + "orders")
 
     lsel = line_item_ds.l_commitdate < line_item_ds.l_receiptdate
     osel = (orders_ds.o_orderdate < date1) & (orders_ds.o_orderdate >= date2)
@@ -160,12 +168,12 @@ def test_query_5(client, dataset_path):
     date1 = datetime.strptime("1994-01-01", "%Y-%m-%d")
     date2 = datetime.strptime("1995-01-01", "%Y-%m-%d")
 
-    region_ds = dd.read_parquet(dataset_path + "region")
-    nation_ds = dd.read_parquet(dataset_path + "nation")
-    customer_ds = dd.read_parquet(dataset_path + "customer")
-    line_item_ds = dd.read_parquet(dataset_path + "lineitem")
-    orders_ds = dd.read_parquet(dataset_path + "orders")
-    supplier_ds = dd.read_parquet(dataset_path + "supplier")
+    region_ds = _read_parquet(dataset_path + "region")
+    nation_ds = _read_parquet(dataset_path + "nation")
+    customer_ds = _read_parquet(dataset_path + "customer")
+    line_item_ds = _read_parquet(dataset_path + "lineitem")
+    orders_ds = _read_parquet(dataset_path + "orders")
+    supplier_ds = _read_parquet(dataset_path + "supplier")
 
     rsel = region_ds.r_name == "ASIA"
     osel = (orders_ds.o_orderdate >= date1) & (orders_ds.o_orderdate < date2)
@@ -190,7 +198,7 @@ def test_query_6(client, dataset_path):
     date2 = datetime.strptime("1995-01-01", "%Y-%m-%d")
     var3 = 24
 
-    line_item_ds = dd.read_parquet(dataset_path + "lineitem")
+    line_item_ds = _read_parquet(dataset_path + "lineitem")
 
     sel = (
         (line_item_ds.l_shipdate >= date1)
@@ -208,11 +216,11 @@ def test_query_7(client, dataset_path):
     var1 = datetime.strptime("1995-01-01", "%Y-%m-%d")
     var2 = datetime.strptime("1997-01-01", "%Y-%m-%d")
 
-    nation_ds = dd.read_parquet(dataset_path + "nation")
-    customer_ds = dd.read_parquet(dataset_path + "customer")
-    line_item_ds = dd.read_parquet(dataset_path + "lineitem")
-    orders_ds = dd.read_parquet(dataset_path + "orders")
-    supplier_ds = dd.read_parquet(dataset_path + "supplier")
+    nation_ds = _read_parquet(dataset_path + "nation")
+    customer_ds = _read_parquet(dataset_path + "customer")
+    line_item_ds = _read_parquet(dataset_path + "lineitem")
+    orders_ds = _read_parquet(dataset_path + "orders")
+    supplier_ds = _read_parquet(dataset_path + "supplier")
 
     lineitem_filtered = line_item_ds[
         (line_item_ds["l_shipdate"] >= var1) & (line_item_ds["l_shipdate"] < var2)
