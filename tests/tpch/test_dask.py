@@ -10,8 +10,8 @@ SUFFIX = ".parquet"
 BLOCKSIZE = "256MiB" #"128MiB"
 
 
-def _read_parquet(path):
-    return dd.read_parquet(path + SUFFIX, blocksize=BLOCKSIZE)
+def _read_parquet(path, **kwargs):
+    return dd.read_parquet(path + SUFFIX, blocksize=BLOCKSIZE, **kwargs)
 
 
 def test_query_1(client, dataset_path, fs):
