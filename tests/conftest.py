@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import contextlib
 import datetime
 import logging
+import math
 import os
 import pathlib
 import pickle
@@ -10,6 +13,7 @@ import threading
 import time
 import uuid
 from functools import lru_cache
+from pathlib import Path
 
 import dask
 import dask.array as da
@@ -54,31 +58,18 @@ def pytest_addoption(parser):
     parser.addoption(
         "--benchmark", action="store_true", help="Collect benchmarking data for tests"
     )
-    parser.addoption("--run-workflows", action="store_true", help="Run workflow tests")
-    parser.addoption(
-        "--tpch-non-dask",
-        action="store_true",
-        help="Run all (DuckDB / Polars / PySpark) TPCH benchmarks",
-    )
 
 
-def pytest_collection_modifyitems(config, items):
-    skip_workflows = pytest.mark.skip(reason="need --run-workflows option to run")
-    for item in items:
-        if not config.getoption("--run-workflows") and (
-            (TEST_DIR / "workflows") in item.path.parents
-        ):
-            item.add_marker(skip_workflows)
+def pytest_sessionfinish(session, exitstatus):
+    # https://github.com/pytest-dev/pytest/issues/2393
+    if exitstatus == 5:  # All tests excluded by markers
+        session.exitstatus = 0
 
-    skip_benchmarks = pytest.mark.skip(reason="need --tpch-non-dask option to run")
 
-    for item in items:
-        if "tpch" in str(item.path):
-            # Skip polars and DuckDB TPCH unless this toggle is on
-            if "test_dask" not in str(item.path) and not config.getoption(
-                "--tpch-non-dask"
-            ):
-                item.add_marker(skip_benchmarks)
+def _is_child_dir(path: str | Path, parent: str | Path) -> bool:
+    _parent = Path(parent).absolute()
+    _path = Path(path).absolute()
+    return _parent in _path.parents or _parent == _path
 
 
 dask.config.set(
@@ -247,6 +238,62 @@ def benchmark_time(test_run_benchmark):
 
 
 @pytest.fixture(scope="function")
+def benchmark_coiled_prometheus(test_run_benchmark):
+    """Benchmark the coiled prometheus metrics of executing some code.
+
+    Yields
+    ------
+    Context manager that records the coiled prometheus metrics of executing
+    the ``with`` statement if run as part of a benchmark, or does nothing otherwise.
+
+    Example
+    -------
+    .. code-block:: python
+
+        def test_something(benchmark_coiled_prometheus):
+            with benchmark_coiled_prometheus:
+                do_something()
+    """
+
+    @contextlib.contextmanager
+    def _benchmark_coiled_prometheus(client):
+        start = math.floor(time.time())
+        yield
+        if not test_run_benchmark:
+            return
+
+        end = math.ceil(time.time())
+        cluster = client.cluster
+        test_run_benchmark.scheduler_memory_max = cluster.get_aggregated_metric(
+            query="scheduler:(host_memory_total-host_memory_available)&scheduler",
+            over_time="max",
+            start_ts=start,
+            end_ts=end,
+        )
+        test_run_benchmark.scheduler_cpu_avg = cluster.get_aggregated_metric(
+            # have to sum since cpu_rate returns the different types
+            query="scheduler:cpu_rate&scheduler | sum",
+            over_time="avg",
+            start_ts=start,
+            end_ts=end,
+        )
+        test_run_benchmark.worker_max_tick = cluster.get_aggregated_metric(
+            query="worker_max_tick|max",
+            over_time="quantile(0.80)",
+            start_ts=start,
+            end_ts=end,
+        )
+        test_run_benchmark.scheduler_max_tick = cluster.get_aggregated_metric(
+            query="scheduler_max_tick|max",
+            over_time="quantile(0.80)",
+            start_ts=start,
+            end_ts=end,
+        )
+
+    return _benchmark_coiled_prometheus
+
+
+@pytest.fixture(scope="function")
 def benchmark_memory(test_run_benchmark):
     """Benchmark the memory usage of executing some code.
 
@@ -356,6 +403,7 @@ def get_cluster_info(test_run_benchmark):
 def benchmark_all(
     benchmark_memory,
     benchmark_task_durations,
+    benchmark_coiled_prometheus,
     get_cluster_info,
     benchmark_time,
 ):
@@ -390,6 +438,7 @@ def benchmark_all(
             benchmark_memory(client),
             benchmark_task_durations(client),
             get_cluster_info(client.cluster),
+            benchmark_coiled_prometheus(client),
             benchmark_time,
         ):
             yield
@@ -411,6 +460,7 @@ def github_cluster_tags():
         "GITHUB_RUN_ID",
         "GITHUB_RUN_NUMBER",
         "GITHUB_SHA",
+        "AB_TEST_NAME",
     ]
 
     return {tag: os.environ.get(tag, "") for tag in tag_names}
@@ -506,7 +556,7 @@ def small_client(
         log_on_scheduler(client, "Starting client setup of %s", test_label)
         client.restart()
         small_cluster.scale(n_workers)
-        client.wait_for_workers(n_workers)
+        client.wait_for_workers(n_workers, timeout=600)
 
         with upload_cluster_dump(client):
             log_on_scheduler(client, "Finished client setup of %s", test_label)
@@ -668,19 +718,24 @@ def upload_cluster_dump(
     yield _upload_cluster_dump
 
 
-# Include https://github.com/dask/distributed/pull/7410 for categorical support
-P2P_SHUFFLE_AVAILABLE = Version(distributed.__version__) >= Version("2023.1.0")
+requires_p2p_shuffle = pytest.mark.skipif(
+    Version(distributed.__version__) < Version("2023.1.0"),
+    reason="p2p shuffle not available",
+)
+requires_p2p_rechunk = pytest.mark.skipif(
+    Version(distributed.__version__) < Version("2023.2.1"),
+    reason="p2p rechunk not available",
+)
+requires_p2p_memory = pytest.mark.skipif(
+    Version(distributed.__version__) < Version("2023.10.1"),
+    reason="in-memory p2p shuffle not available",
+)
 
 
 @pytest.fixture(
     params=[
-        "tasks",
-        pytest.param(
-            "p2p",
-            marks=pytest.mark.skipif(
-                not P2P_SHUFFLE_AVAILABLE, reason="p2p shuffle not available"
-            ),
-        ),
+        pytest.param("tasks", marks=pytest.mark.shuffle_tasks),
+        pytest.param("p2p", marks=[pytest.mark.shuffle_p2p, requires_p2p_shuffle]),
     ]
 )
 def shuffle_method(request):
@@ -690,31 +745,6 @@ def shuffle_method(request):
 @pytest.fixture
 def configure_shuffling(shuffle_method):
     with dask.config.set({"dataframe.shuffle.method": shuffle_method}):
-        yield
-
-
-# Include https://github.com/dask/distributed/pull/7534
-P2P_RECHUNK_AVAILABLE = Version(distributed.__version__) >= Version("2023.2.1")
-
-
-@pytest.fixture(
-    params=[
-        "tasks",
-        pytest.param(
-            "p2p",
-            marks=pytest.mark.skipif(
-                not P2P_RECHUNK_AVAILABLE, reason="p2p rechunk not available"
-            ),
-        ),
-    ]
-)
-def rechunk_method(request):
-    return request.param
-
-
-@pytest.fixture
-def configure_rechunking(rechunk_method):
-    with dask.config.set({"array.rechunk.method": rechunk_method}):
         yield
 
 
@@ -752,8 +782,7 @@ def new_array(request):
     when compressible data.
     """
     if request.param == "uncompressible":
-        rng = da.random.default_rng()
-        return rng.random
+        return da.random.random
     assert request.param == "compressible"
 
     def compressible(x):
@@ -773,8 +802,7 @@ def new_array(request):
         return y.reshape(x.shape)
 
     def _(*args, **kwargs):
-        rng = da.random.default_rng()
-        a = rng.random(*args, **kwargs)
+        a = da.random.random(*args, **kwargs)
         return a.map_blocks(compressible, dtype=a.dtype)
 
     return _

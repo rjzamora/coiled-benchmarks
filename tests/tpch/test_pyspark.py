@@ -1,5 +1,11 @@
 import re
 
+import pytest
+
+pytestmark = pytest.mark.tpch_nondask
+
+pytest.importorskip("coiled.spark")
+
 
 def register_table(spark, path, name):
     path = path.replace("s3://", "s3a://")

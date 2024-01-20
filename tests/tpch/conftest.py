@@ -1,45 +1,85 @@
+import contextlib
+import datetime
 import os
+import time
 import uuid
 
 import coiled
 import dask
+import filelock
 import pytest
-from dask.distributed import LocalCluster
+from dask.distributed import LocalCluster, performance_report
 
-_scale = 100
-_local = True
-_rapids = True
 
+##################
+# Global Options #
+##################
+
+
+LOCAL_SF1_PATH = "/raid/dask-space/rzamora/tpch-data/tables_scale_1/"
+LOCAL_SF10_PATH = "/raid/dask-space/rzamora/tpch-data/tables_scale_10/"
 LOCAL_SF100_PATH = "/raid/dask-space/rzamora/tpch-data/tables_scale_100/"
-#LOCAL_SF100_PATH = "./tpch-data/scale100/"
-
 LOCAL_DIRECTORY = "/raid/dask-space/rzamora/dask-space"
 
 
-@pytest.fixture(scope="session")
-def scale():
-    return _scale
+def pytest_addoption(parser):
+    parser.addoption("--local", action="store_true", default=False, help="")
+    parser.addoption("--cloud", action="store_false", dest="local", help="")
+    parser.addoption("--restart", action="store_true", default=True, help="")
+    parser.addoption("--rapids", action="store_true", default=False, help="")
+    parser.addoption("--no-restart", action="store_false", dest="restart", help="")
+    parser.addoption(
+        "--performance-report", action="store_true", default=False, help=""
+    )
+
+    parser.addoption(
+        "--scale",
+        action="store",
+        default=10,
+        help="Scale to run, 10, 100, 1000, or 10000",
+    )
+    parser.addoption(
+        "--name",
+        action="store",
+        default="",
+        help="Name to use for run",
+    )
 
 
 @pytest.fixture(scope="session")
-def local():
-    return _local  # TODO: this is ugly.  done for coiled_function
+def scale(request):
+    return int(request.config.getoption("scale"))
 
 
 @pytest.fixture(scope="session")
-def rapids():
-    return _rapids
+def local(request):
+    return request.config.getoption("local")
+
+
+@pytest.fixture(scope="session")
+def restart(request):
+    return request.config.getoption("restart")
+
+
+@pytest.fixture(scope="session")
+def rapids(request):
+    return request.config.getoption("rapids")
 
 
 @pytest.fixture(scope="session")
 def dataset_path(local, scale):
     remote_paths = {
-        10: "s3://coiled-runtime-ci/tpch_scale_10/",
-        100: "s3://coiled-runtime-ci/tpch_scale_100/",
-        1000: "s3://coiled-runtime-ci/tpch-scale-1000-date/",
+        10: "s3://coiled-runtime-ci/tpc-h/snappy/scale-10/",
+        100: "s3://coiled-runtime-ci/tpc-h/snappy/scale-100/",
+        1000: "s3://coiled-runtime-ci/tpc-h/snappy/scale-1000/",
+        10000: "s3://coiled-runtime-ci/tpc-h/snappy/scale-10000/",
     }
     local_paths = {
-        10: "./tpch-data/scale10/",
+        #1: "./tpch-data/scale-1/",
+        1: LOCAL_SF1_PATH,
+        #10: "./tpch-data/scale-10/",
+        10: LOCAL_SF10_PATH,
+        #100: "./tpch-data/scale-100/",
         100: LOCAL_SF100_PATH,
     }
 
@@ -56,14 +96,120 @@ def module(request):
     return module
 
 
+@pytest.fixture(scope="function")
+def query(request):
+    if request.node.name.startswith("test_query_"):
+        return int(request.node.name.split("_")[-1])
+    else:
+        return None
+
+
+@pytest.fixture(scope="session")
+def name(request, tmp_path_factory, worker_id):
+    if request.config.getoption("name"):
+        return request.config.getoption("name")
+
+    if worker_id == "master":
+        # not executing in with multiple workers
+        return uuid.uuid4().hex[:8]
+
+    # get the temp directory shared by all workers
+    root_tmp_dir = tmp_path_factory.getbasetemp().parent
+
+    fn = root_tmp_dir / "data"
+    with filelock.FileLock(str(fn) + ".lock"):
+        if fn.is_file():
+            data = fn.read_text()
+        else:
+            data = uuid.uuid4().hex[:8]
+            fn.write_text(data)
+    return data
+
+
+@pytest.fixture(scope="function")
+def benchmark_time(test_run_benchmark, module, scale, name):
+    """Benchmark the wall clock time of executing some code.
+
+    Yields
+    ------
+    Context manager that records the wall clock time duration of executing
+    the ``with`` statement if run as part of a benchmark, or does nothing otherwise.
+
+    Example
+    -------
+    .. code-block:: python
+
+        def test_something(benchmark_time):
+            with benchmark_time:
+                do_something()
+    """
+
+    @contextlib.contextmanager
+    def _benchmark_time():
+        if not test_run_benchmark:
+            yield
+        else:
+            start = time.time()
+            yield
+            end = time.time()
+            test_run_benchmark.duration = end - start
+            test_run_benchmark.start = datetime.datetime.utcfromtimestamp(start)
+            test_run_benchmark.end = datetime.datetime.utcfromtimestamp(end)
+            test_run_benchmark.cluster_name = f"tpch-{module}-{scale}-{name}"
+
+    return _benchmark_time()
+
+
 #############################################
 # Multi-machine fixtures for Spark and Dask #
 #############################################
 
 
+@pytest.fixture(scope="session")
+def cluster_spec(scale):
+    everywhere = dict(
+        idle_timeout="1h",
+        wait_for_workers=True,
+        scheduler_vm_types=["m6i.xlarge"],
+    )
+    if scale == 10:
+        return {
+            "worker_vm_types": ["m6i.large"],
+            "n_workers": 16,
+            **everywhere,
+        }
+    elif scale == 100:
+        return {
+            "worker_vm_types": ["m6i.large"],
+            "n_workers": 16,
+            **everywhere,
+        }
+    elif scale == 1000:
+        return {
+            "worker_vm_types": ["m6i.large"],
+            "n_workers": 32,
+            **everywhere,
+        }
+    elif scale == 10000:
+        return {
+            "worker_vm_types": ["m6i.2xlarge"],
+            "n_workers": 64,
+            "worker_disk_size": 100,
+            **everywhere,
+        }
+
+
 @pytest.fixture(scope="module")
 def cluster(
-    local, rapids, scale, module, dask_env_variables, cluster_kwargs, github_cluster_tags
+    local,
+    rapids,
+    scale,
+    module,
+    dask_env_variables,
+    cluster_spec,
+    github_cluster_tags,
+    name,
+    make_chart,
 ):
     if local:
         if rapids:
@@ -92,11 +238,11 @@ def cluster(
         if rapids:
             raise NotImplementedError()
         kwargs = dict(
-            name=f"tpch-{module}-{scale}-{uuid.uuid4().hex[:8]}",
+            name=f"tpch-{module}-{scale}-{name}",
             environ=dask_env_variables,
             tags=github_cluster_tags,
             region="us-east-2",
-            **cluster_kwargs["tpch"],
+            **cluster_spec,
         )
         with dask.config.set({"distributed.scheduler.worker-saturation": "inf"}):
             with coiled.Cluster(**kwargs) as cluster:
@@ -109,14 +255,31 @@ def client(
     cluster,
     testrun_uid,
     cluster_kwargs,
-    benchmark_all,
+    benchmark_time,
+    restart,
+    scale,
+    local,
+    query,
 ):
     with cluster.get_client() as client:
-        client.restart()
+        if restart:
+            client.restart()
         client.run(lambda: None)
 
-        with benchmark_all(client):
-            yield client
+        local = "local" if local else "cloud"
+        if request.config.getoption("--performance-report"):
+            if not os.path.exists("performance-reports"):
+                os.mkdir("performance-reports")
+            with performance_report(
+                filename=os.path.join(
+                    "performance-reports", f"{local}-{scale}-{query}.html"
+                )
+            ):
+                with benchmark_time:
+                    yield client
+        else:
+            with benchmark_time:
+                yield client
 
 
 @pytest.fixture(scope="module")
@@ -128,10 +291,7 @@ def spark_setup(cluster, local):
 
         spark = SparkSession.builder.master("local[*]").getOrCreate()
     else:
-        from coiled.spark import get_spark
-
-        with cluster.get_client() as client:
-            spark = get_spark(client)
+        spark = cluster.get_spark()
 
     # warm start
     from pyspark.sql import Row
@@ -154,59 +314,119 @@ def spark(spark_setup, benchmark_time):
     spark_setup.catalog.clearCache()
 
 
+@pytest.fixture
+def fs(local):
+    if local:
+        return None
+    else:
+        return None
+        # TODO: Add this when arrow fs is supported
+        # import boto3
+        # from pyarrow.fs import S3FileSystem
+        #
+        # session = boto3.session.Session()
+        # credentials = session.get_credentials()
+        #
+        # fs = S3FileSystem(
+        #     secret_key=credentials.secret_key,
+        #     access_key=credentials.access_key,
+        #     region="us-east-2",
+        #     session_token=credentials.token,
+        # )
+        # return fs
+
+
 #################################################
 # Single machine fixtures for Polars and DuckDB #
 #################################################
 
 
-machine = {  # TODO: figure out where to place this
-    "vm_type": "m6i.8xlarge",
-}
-
-_uuid = uuid.uuid4().hex[:8]
-
-
-def coiled_function():
-    def _(function):
-        if _local:
-            return function
-        else:
-            module = function.__module__.split("_")[-1]  # polars, duckdb, ...
-            return coiled.function(
-                **machine,
-                name=f"tpch-{module}-{_scale}-{_uuid}",
-            )(function)
-
-    return _
+@pytest.fixture(scope="session")
+def machine_spec(scale):
+    if scale == 10:
+        return {
+            "vm_type": "m6i.8xlarge",
+        }
+    elif scale == 100:
+        return {
+            "vm_type": "m6i.8xlarge",
+        }
+    elif scale == 1000:
+        return {
+            "vm_type": "m6i.16xlarge",
+        }
+    elif scale == 10000:
+        return {
+            "vm_type": "m6i.32xlarge",
+            "disk_size": 1000,
+        }
 
 
 @pytest.fixture(scope="module")
-def coiled_function_client(module, local):
-    if not local:
+def module_run(local, module, scale, name, machine_spec):
+    if local:
 
-        @coiled.function(
-            **machine,
-            name=f"tpch-{module}-{_scale}-{_uuid}",
-        )
-        def _():
-            pass
+        def _run(function):
+            return function()
 
-        yield _.client
+        yield _run
 
     else:
-        yield None
+
+        @coiled.function(**machine_spec, name=f"tpch-{module}-{scale}-{name}")
+        def _run(function):
+            return function()
+
+        yield _run
 
 
 @pytest.fixture(scope="module")
-def warm_start(coiled_function_client):
+def warm_start(module_run, local):
+    module_run(lambda: None)
+
+    yield
+
     if not local:
-        coiled_function_client.submit(lambda: 0).result()
+        module_run.cluster.shutdown()
 
 
 @pytest.fixture(scope="function")
-def restart(benchmark_time, warm_start, coiled_function_client):
-    if not local:
-        coiled_function_client.restart()
+def run(module_run, restart, benchmark_time, warm_start, make_chart):
+    if restart and not local:
+        module_run.client.restart()
 
     with benchmark_time:
+        yield module_run
+
+
+#############
+# Charting #
+#############
+
+
+@pytest.fixture(scope="session")
+def make_chart(request, name, tmp_path_factory, local, scale):
+    if not request.config.getoption("--benchmark"):
+        # Won't create the sqlite DB, and thus won't be able
+        # to read test run information
         yield
+        return
+
+    root_tmp_dir = tmp_path_factory.getbasetemp().parent
+    lock = filelock.FileLock(root_tmp_dir / "tpch.lock")
+
+    local = "local" if local else "cloud"
+
+    try:
+        yield
+    finally:
+        from .generate_plot import generate
+
+        with lock:
+            if not os.path.exists("charts"):
+                os.mkdir("charts")
+            generate(
+                outfile=os.path.join("charts", f"{local}-{scale}-query-{name}.json"),
+                name=name,
+                scale=scale,
+            )
