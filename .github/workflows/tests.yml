@@ -8,7 +8,8 @@ on:
   pull_request:
   schedule:
     # Runs "At 00:01" (see https://crontab.guru)
-    - cron: "1 0 * * *"
+    - cron: "1 0 * * 0" # every Sunday (relevant for non-Dask TPC-H benchmarks) 
+    - cron: "1 0 * * 1-6" # every day except Sunday
   workflow_dispatch:
 
 concurrency:
@@ -24,46 +25,47 @@ defaults:
 
 jobs:
   tests:
-    name: ${{ matrix.pytest_args }} ${{ matrix.os }} py${{ matrix.python-version }}
+    name: ${{ matrix.name_prefix }} ${{ matrix.os }} py${{ matrix.python_version }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.9"]
-        pytest_args: [tests]
+        python_version: ["3.9"]
+        pytest_args: [tests --ignore=tests/tpch]
         extra-env: [""]
+        name_prefix: [tests]
         include:
           # Run stability tests on the lowest and highest versions of Python only
-          # These are temporarily redundant with the current global python-version
+          # These are temporarily redundant with the current global python_version
           # - pytest_args: tests/stability
-          #   python-version: "3.9"
+          #   python_version: "3.9"
           #   os: ubuntu-latest
-          # - pytest_args: tests/stability
-          #   python-version: "3.9"
-          #   os: ubuntu-latest
+          #   name_prefix: stability
           - pytest_args: tests/stability
-            python-version: "3.11"
+            python_version: "3.11"
             os: ubuntu-latest
-          - pytest_args: tests/stability
-            python-version: "3.11"
-            os: ubuntu-latest
+            name_prefix: stability
           # Run stability tests on Python Windows and MacOS (latest py39 only)
           - pytest_args: tests/stability
-            python-version: "3.9"
+            python_version: "3.9"
             os: windows-latest
+            name_prefix: stability
           - pytest_args: tests/stability
-            python-version: "3.9"
+            python_version: "3.9"
             os: macos-latest
+            name_prefix: stability
           - pytest_args: tests/workflows/test_snowflake.py
-            python-version: "3.9"
+            python_version: "3.9"
             os: ubuntu-latest
+            name_prefix: snowflake
             extra-env: ci/environment-snowflake.yml
-          - pytest_args: tests/tpch -m tpch_nondask
-            python-version: "3.9"
+          - pytest_args: tests/tpch
+            python_version: "3.9"
             os: ubuntu-latest
             extra-env: ci/environment-tpch-nondask.yml
+            name_prefix: tpch
 
     steps:
       - name: Checkout
@@ -75,7 +77,7 @@ jobs:
           miniforge-variant: Mambaforge
           use-mamba: true
           condarc-file: ci/condarc
-          python-version: ${{ matrix.python-version }}
+          python_version: ${{ matrix.python_version }}
           environment-file: ci/environment.yml
 
       - name: Add extra packages to environment
@@ -108,10 +110,11 @@ jobs:
         run: |
           echo PYTEST_MARKERS=" and not workflows" >> $GITHUB_ENV
 
-      - name: Disable non-Dask TPCH benchmarks on most PRs
+      - name: Disable non-Dask TPCH benchmarks on most PRs and on daily schedule (except Sundays)
         if: |
-          github.event_name != 'schedule'
-          && !(github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'tpch'))
+            matrix.name_prefix != 'tpch' ||
+            (github.event_name != 'schedule' || github.event.schedule != '1 0 * * 0') &&
+            (github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'tpch'))
         run: |
           echo PYTEST_MARKERS="${{ env.PYTEST_MARKERS }} and not tpch_nondask" >> $GITHUB_ENV
 
@@ -136,7 +139,7 @@ jobs:
           SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
           COILED_RUNTIME_VERSION: ${{ matrix.runtime-version }}
-          DB_NAME: ${{ matrix.os }}-py${{ matrix.python-version }}.db
+          DB_NAME: ${{ matrix.name_prefix }}-${{ matrix.os }}-py${{ matrix.python_version }}.db
           CLUSTER_DUMP: always
         run: |
           pytest --benchmark -n 4 --dist loadscope ${{ env.PYTEST_MARKERS }} ${{ matrix.pytest_args }}
@@ -148,9 +151,9 @@ jobs:
         uses: actions/upload-artifact@v3
         if: always()
         with:
-          name: ${{ matrix.os }}-py${{ matrix.python-version }}
+          name: ${{ matrix.name_prefix }}-${{ matrix.os }}-py${{ matrix.python_version }}
           path: |
-            ${{ matrix.os }}-py${{ matrix.python-version }}.db
+            ${{ matrix.name_prefix }}-${{ matrix.os }}-py${{ matrix.python_version }}.db
             cluster_kwargs.*.*
             mamba_env_export.yml
 
@@ -171,7 +174,7 @@ jobs:
       - name: Install Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
+          python_version: "3.10"
 
       - name: Install dependencies
         run: pip install alembic

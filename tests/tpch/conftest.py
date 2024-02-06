@@ -10,16 +10,11 @@ import filelock
 import pytest
 from dask.distributed import LocalCluster, performance_report
 
+from .utils import get_dataset_path
 
 ##################
 # Global Options #
 ##################
-
-
-LOCAL_SF1_PATH = "/raid/dask-space/rzamora/tpch-data/tables_scale_1/"
-LOCAL_SF10_PATH = "/raid/dask-space/rzamora/tpch-data/tables_scale_10/"
-LOCAL_SF100_PATH = "/raid/dask-space/rzamora/tpch-data/tables_scale_100/"
-LOCAL_DIRECTORY = "/raid/dask-space/rzamora/dask-space"
 
 
 def pytest_addoption(parser):
@@ -44,6 +39,7 @@ def pytest_addoption(parser):
         default="",
         help="Name to use for run",
     )
+    parser.addoption("--plot", action="store_true", default=False, help="")
 
 
 @pytest.fixture(scope="session")
@@ -68,25 +64,7 @@ def rapids(request):
 
 @pytest.fixture(scope="session")
 def dataset_path(local, scale):
-    remote_paths = {
-        10: "s3://coiled-runtime-ci/tpc-h/snappy/scale-10/",
-        100: "s3://coiled-runtime-ci/tpc-h/snappy/scale-100/",
-        1000: "s3://coiled-runtime-ci/tpc-h/snappy/scale-1000/",
-        10000: "s3://coiled-runtime-ci/tpc-h/snappy/scale-10000/",
-    }
-    local_paths = {
-        #1: "./tpch-data/scale-1/",
-        1: LOCAL_SF1_PATH,
-        #10: "./tpch-data/scale-10/",
-        10: LOCAL_SF10_PATH,
-        #100: "./tpch-data/scale-100/",
-        100: LOCAL_SF100_PATH,
-    }
-
-    if local:
-        return local_paths[scale]
-    else:
-        return remote_paths[scale]
+    return get_dataset_path(local, scale)
 
 
 @pytest.fixture(scope="module")
@@ -409,6 +387,11 @@ def make_chart(request, name, tmp_path_factory, local, scale):
     if not request.config.getoption("--benchmark"):
         # Won't create the sqlite DB, and thus won't be able
         # to read test run information
+        yield
+        return
+
+    if not request.config.getoption("--plot"):
+        # Don't generate the plot
         yield
         return
 
