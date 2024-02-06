@@ -202,13 +202,11 @@ def cluster(
             ):
                 with dask_cuda.LocalCUDACluster(
                     rmm_pool_size="24GB",
-                    local_directory=LOCAL_DIRECTORY,
                     dashboard_address=":41717",
                 ) as cluster:
                     yield cluster
         else:
             with LocalCluster(
-                local_directory=LOCAL_DIRECTORY,
                 dashboard_address=":41717",
             ) as cluster:
                 yield cluster

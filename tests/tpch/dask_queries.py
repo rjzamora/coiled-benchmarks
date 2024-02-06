@@ -3,12 +3,10 @@ from datetime import datetime, timedelta
 import dask_expr as dd
 
 
-SUFFIX = ".parquet"
-BLOCKSIZE = "256MiB" #"128MiB"
-
-
 def _read_parquet(path, **kwargs):
-    return _read_parquet(path + SUFFIX, blocksize=BLOCKSIZE, **kwargs)
+    SUFFIX = ".parquet"
+    BLOCKSIZE = "256MiB" #"128MiB"
+    return dd.read_parquet(path + SUFFIX, blocksize=BLOCKSIZE, **kwargs)
 
 
 def query_1(dataset_path, fs):

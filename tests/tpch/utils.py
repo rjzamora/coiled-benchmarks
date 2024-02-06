@@ -2,7 +2,6 @@
 LOCAL_SF1_PATH = "/raid/dask-space/rzamora/tpch-data/tables_scale_1/"
 LOCAL_SF10_PATH = "/raid/dask-space/rzamora/tpch-data/tables_scale_10/"
 LOCAL_SF100_PATH = "/raid/dask-space/rzamora/tpch-data/tables_scale_100/"
-LOCAL_DIRECTORY = "/raid/dask-space/rzamora/dask-space"
 
 
 def get_dataset_path(local, scale):
