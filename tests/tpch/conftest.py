@@ -200,9 +200,18 @@ def cluster(
                     "dataframe.shuffle.method": "tasks",
                 }
             ):
+                if scale == 1:
+                    n_workers = 1
+                elif scale == 10:
+                    n_workers = 2
+                elif scale == 100:
+                    n_workers = 4
+                else:
+                    n_workers = None
                 with dask_cuda.LocalCUDACluster(
                     rmm_pool_size="24GB",
                     dashboard_address=":41717",
+                    n_workers=n_workers,
                 ) as cluster:
                     yield cluster
         else:
